@@ -103,3 +103,20 @@ func TestAuthAndCORS(t *testing.T) {
 		t.Fatalf("with key got %d, want 200", rec2.Code)
 	}
 }
+
+func TestCORSEchoesOrigin(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), st, mealie.New("", ""), Config{AllowOrigin: "*"})
+
+	req := httptest.NewRequest(http.MethodOptions, "/inventory", nil)
+	req.Header.Set("Origin", "https://anything.example")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://anything.example" {
+		t.Fatalf("allow-origin = %q, want echoed request origin", got)
+	}
+}

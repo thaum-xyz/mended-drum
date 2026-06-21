@@ -256,18 +256,32 @@ func publicPath(p string) bool {
 	return false
 }
 
+// setCORS reflects the caller's Origin so the tool server works regardless of
+// which host Open WebUI is served from. A configured non-"*" AllowOrigin pins
+// that value instead.
+func setCORS(w http.ResponseWriter, r *http.Request, cfg Config) {
+	w.Header().Set("Vary", "Origin")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+	w.Header().Set("Access-Control-Max-Age", "86400")
+
+	reqOrigin := r.Header.Get("Origin")
+	switch {
+	case cfg.AllowOrigin != "" && cfg.AllowOrigin != "*":
+		w.Header().Set("Access-Control-Allow-Origin", cfg.AllowOrigin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	case reqOrigin != "":
+		w.Header().Set("Access-Control-Allow-Origin", reqOrigin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	default:
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	}
+}
+
 // middleware adds CORS, optional bearer-key auth and request logging.
 func middleware(log *slog.Logger, cfg Config, next http.Handler) http.Handler {
-	origin := cfg.AllowOrigin
-	if origin == "" {
-		origin = "*"
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Vary", "Origin")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-		w.Header().Set("Access-Control-Max-Age", "86400")
+		setCORS(w, r, cfg)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
