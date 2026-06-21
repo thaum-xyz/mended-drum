@@ -198,26 +198,36 @@ func (s *Store) GetGuest(ctx context.Context, handle string) (*Guest, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT kind, value FROM guest_pref WHERE handle_key = ?`, Key(handle))
+	g.Likes, g.Dislikes, g.Allergies, err = s.loadPrefs(ctx, Key(handle))
 	if err != nil {
 		return nil, err
+	}
+	return g, nil
+}
+
+// loadPrefs returns a guest's preferences grouped by kind.
+func (s *Store) loadPrefs(ctx context.Context, handleKey string) (likes, dislikes, allergies []string, err error) {
+	likes, dislikes, allergies = []string{}, []string{}, []string{}
+	rows, err := s.db.QueryContext(ctx, `SELECT kind, value FROM guest_pref WHERE handle_key = ?`, handleKey)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var kind, value string
 		if err := rows.Scan(&kind, &value); err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 		switch PrefKind(kind) {
 		case Like:
-			g.Likes = append(g.Likes, value)
+			likes = append(likes, value)
 		case Dislike:
-			g.Dislikes = append(g.Dislikes, value)
+			dislikes = append(dislikes, value)
 		case Allergy:
-			g.Allergies = append(g.Allergies, value)
+			allergies = append(allergies, value)
 		}
 	}
-	return g, rows.Err()
+	return likes, dislikes, allergies, rows.Err()
 }
 
 // SearchGuests returns guests whose handle or notes match q (all if q is empty).
@@ -238,14 +248,26 @@ func (s *Store) SearchGuests(ctx context.Context, q string) ([]Guest, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := []Guest{}
 	for rows.Next() {
 		var g Guest
 		if err := rows.Scan(&g.Handle, &g.Notes); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		out = append(out, g)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close() // release the single connection before per-guest pref queries
+
+	for i := range out {
+		out[i].Likes, out[i].Dislikes, out[i].Allergies, err = s.loadPrefs(ctx, Key(out[i].Handle))
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }

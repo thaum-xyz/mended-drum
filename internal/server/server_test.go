@@ -147,4 +147,12 @@ func TestGuestRoundTrip(t *testing.T) {
 	if !strings.Contains(rg.Body.String(), "nuts") {
 		t.Fatalf("expected allergy 'nuts' in profile, got %s", rg.Body.String())
 	}
+
+	// Search results must carry preferences too (not null).
+	srch := httptest.NewRequest(http.MethodGet, "/guests?q=anna", nil)
+	rs := httptest.NewRecorder()
+	srv.ServeHTTP(rs, srch)
+	if rs.Code != http.StatusOK || !strings.Contains(rs.Body.String(), "nuts") {
+		t.Fatalf("search should include prefs, got %d: %s", rs.Code, rs.Body.String())
+	}
 }
