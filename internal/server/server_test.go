@@ -114,9 +114,13 @@ func TestCORSEchoesOrigin(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodOptions, "/inventory", nil)
 	req.Header.Set("Origin", "https://anything.example")
+	req.Header.Set("Access-Control-Request-Headers", "authorization, x-session-id")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://anything.example" {
 		t.Fatalf("allow-origin = %q, want echoed request origin", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "authorization, x-session-id" {
+		t.Fatalf("allow-headers = %q, want reflected request headers", got)
 	}
 }

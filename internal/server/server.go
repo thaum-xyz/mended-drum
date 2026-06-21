@@ -261,8 +261,15 @@ func publicPath(p string) bool {
 // that value instead.
 func setCORS(w http.ResponseWriter, r *http.Request, cfg Config) {
 	w.Header().Set("Vary", "Origin")
+	w.Header().Add("Vary", "Access-Control-Request-Headers")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+	// Reflect whatever headers the caller asks for (Open WebUI sends extras like
+	// x-session-id); fall back to the basics for non-preflight requests.
+	if reqHeaders := r.Header.Get("Access-Control-Request-Headers"); reqHeaders != "" {
+		w.Header().Set("Access-Control-Allow-Headers", reqHeaders)
+	} else {
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+	}
 	w.Header().Set("Access-Control-Max-Age", "86400")
 
 	reqOrigin := r.Header.Get("Origin")
