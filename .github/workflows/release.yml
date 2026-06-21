@@ -1,0 +1,96 @@
+name: Release container image to GHCR
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "Dockerfile"
+      - ".github/workflows/release.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - run: go test ./...
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ghcr-publish-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute next tag (YYYY.WW.PATCH)
+        id: nexttag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ github.event.repository.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          YEAR="$(date -u +%G)"
+          WEEK="$(date -u +%V)"
+          PREFIX="${YEAR}.${WEEK}"
+
+          fetch_tags() {
+            gh api --silent --paginate -H "Accept: application/vnd.github+json" "$1?per_page=100" \
+              --jq '.[].metadata.container.tags[]?' 2>/dev/null || true
+          }
+
+          TAGS="$(fetch_tags "/orgs/${OWNER}/packages/container/${IMAGE}/versions")"
+          if [ -z "$TAGS" ]; then
+            TAGS="$(fetch_tags "/users/${OWNER}/packages/container/${IMAGE}/versions")"
+          fi
+
+          MAX_PATCH=0
+          while IFS= read -r t; do
+            [[ -n "$t" ]] || continue
+            if [[ "$t" =~ ^${PREFIX}\.([0-9]+)$ ]]; then
+              p=$((10#${BASH_REMATCH[1]}))
+              if (( p > MAX_PATCH )); then MAX_PATCH="$p"; fi
+            fi
+          done <<< "$TAGS"
+
+          TAG="${PREFIX}.$((MAX_PATCH + 1))"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Computed tag: $TAG"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ env.REGISTRY }}/${{ github.repository }}:${{ steps.nexttag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
