@@ -30,10 +30,15 @@ func main() {
 
 	mc := mealie.New(os.Getenv("MEALIE_BASE_URL"), os.Getenv("MEALIE_API_TOKEN"))
 
+	cfg := server.Config{
+		APIKey:      os.Getenv("TOOLS_API_KEY"),
+		AllowOrigin: envOr("CORS_ALLOW_ORIGIN", "*"),
+	}
+
 	addr := ":" + envOr("PORT", "8080")
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(logger, st, mc),
+		Handler:           server.New(logger, st, mc, cfg),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

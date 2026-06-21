@@ -3,6 +3,7 @@
 package server
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,12 @@ import (
 
 const maxRecipes = 25
 
+// Config holds runtime configuration for the HTTP layer.
+type Config struct {
+	APIKey      string // if set, required as "Authorization: Bearer <key>" on data endpoints
+	AllowOrigin string // CORS Access-Control-Allow-Origin (defaults to "*")
+}
+
 type Server struct {
 	log    *slog.Logger
 	store  *store.Store
@@ -22,7 +29,7 @@ type Server struct {
 }
 
 // New returns the HTTP handler for the tool server.
-func New(log *slog.Logger, st *store.Store, mc *mealie.Client) http.Handler {
+func New(log *slog.Logger, st *store.Store, mc *mealie.Client, cfg Config) http.Handler {
 	s := &Server{log: log, store: st, mealie: mc}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
@@ -32,7 +39,7 @@ func New(log *slog.Logger, st *store.Store, mc *mealie.Client) http.Handler {
 	mux.HandleFunc("PUT /inventory", s.setInventory)
 	mux.HandleFunc("GET /recipes/search", s.searchRecipes)
 	mux.HandleFunc("GET /recipes/{slug}", s.getRecipe)
-	return logging(s.log, mux)
+	return middleware(log, cfg, mux)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -240,9 +247,39 @@ func (s *Server) fail(w http.ResponseWriter, code int, msg string, err error) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
-func logging(logger *slog.Logger, next http.Handler) http.Handler {
+// publicPath reports whether a path is reachable without the API key.
+func publicPath(p string) bool {
+	switch p {
+	case "/healthz", "/readyz", "/openapi.json":
+		return true
+	}
+	return false
+}
+
+// middleware adds CORS, optional bearer-key auth and request logging.
+func middleware(log *slog.Logger, cfg Config, next http.Handler) http.Handler {
+	origin := cfg.AllowOrigin
+	if origin == "" {
+		origin = "*"
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if cfg.APIKey != "" && !publicPath(r.URL.Path) {
+			want := "Bearer " + cfg.APIKey
+			if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(want)) != 1 {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				return
+			}
+		}
 		next.ServeHTTP(w, r)
-		logger.Info("request", "method", r.Method, "path", r.URL.Path)
+		log.Info("request", "method", r.Method, "path", r.URL.Path)
 	})
 }

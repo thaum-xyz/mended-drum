@@ -9,7 +9,7 @@ const openAPISpec = `{
     "version": "0.1.0",
     "description": "Tools for the bar assistant: a 3-state ingredient inventory and the cocktail recipe book (backed by Mealie), including which recipes can be made from current stock and their allergens."
   },
-  "servers": [{"url": "http://mended-drum-tools:8080"}],
+  "servers": [{"url": "https://drum-tools.krupa.net.pl"}],
   "paths": {
     "/inventory": {
       "get": {
