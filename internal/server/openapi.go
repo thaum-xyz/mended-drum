@@ -57,6 +57,61 @@ const openAPISpec = `{
         "parameters": [{"name": "slug", "in": "path", "required": true, "schema": {"type": "string"}, "description": "Recipe slug from a search result"}],
         "responses": {"200": {"description": "Recipe detail", "content": {"application/json": {"schema": {"type": "object"}}}}}
       }
+    },
+    "/guests": {
+      "get": {
+        "operationId": "searchGuests",
+        "summary": "Search or list guests",
+        "description": "Find regular guests by name/handle or notes. Omit q to list everyone. Use this to recall a guest before recommending drinks.",
+        "parameters": [{"name": "q", "in": "query", "required": false, "schema": {"type": "string"}, "description": "Name or note fragment; omit to list all"}],
+        "responses": {"200": {"description": "Matching guests", "content": {"application/json": {"schema": {"type": "object"}}}}}
+      },
+      "put": {
+        "operationId": "upsertGuest",
+        "summary": "Create or update a guest",
+        "description": "Create a guest or update their free-text notes. Use a stable handle (e.g. the guest's name).",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": ["handle"],
+            "properties": {
+              "handle": {"type": "string", "description": "Guest name/handle, e.g. 'Anna'"},
+              "notes": {"type": "string", "description": "Free-text notes about the guest"}
+            }
+          }}}
+        },
+        "responses": {"200": {"description": "Saved guest", "content": {"application/json": {"schema": {"type": "object"}}}}}
+      }
+    },
+    "/guests/get": {
+      "get": {
+        "operationId": "getGuest",
+        "summary": "Get a guest's profile and preferences",
+        "description": "Returns a guest's notes plus their likes, dislikes and allergies. ALWAYS check allergies against a recipe's allergens before recommending it.",
+        "parameters": [{"name": "handle", "in": "query", "required": true, "schema": {"type": "string"}, "description": "Guest name/handle"}],
+        "responses": {"200": {"description": "Guest profile", "content": {"application/json": {"schema": {"type": "object"}}}}}
+      }
+    },
+    "/guests/preferences": {
+      "post": {
+        "operationId": "addGuestPreference",
+        "summary": "Record a guest preference",
+        "description": "Add a like, dislike or allergy for a guest (creates the guest if new). Record allergies verbatim and conservatively.",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": ["handle", "kind", "value"],
+            "properties": {
+              "handle": {"type": "string", "description": "Guest name/handle"},
+              "kind": {"type": "string", "enum": ["like", "dislike", "allergy"], "description": "Kind of preference"},
+              "value": {"type": "string", "description": "What they like/dislike or are allergic to, e.g. 'mezcal', 'nuts'"}
+            }
+          }}}
+        },
+        "responses": {"200": {"description": "Recorded", "content": {"application/json": {"schema": {"type": "object"}}}}}
+      }
     }
   }
 }`

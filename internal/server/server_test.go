@@ -124,3 +124,27 @@ func TestCORSEchoesOrigin(t *testing.T) {
 		t.Fatalf("allow-headers = %q, want reflected request headers", got)
 	}
 }
+
+func TestGuestRoundTrip(t *testing.T) {
+	srv := testServer(t)
+
+	// Recording a preference auto-creates the guest.
+	post := httptest.NewRequest(http.MethodPost, "/guests/preferences",
+		strings.NewReader(`{"handle":"Anna","kind":"allergy","value":"nuts"}`))
+	rp := httptest.NewRecorder()
+	srv.ServeHTTP(rp, post)
+	if rp.Code != http.StatusOK {
+		t.Fatalf("add pref %d: %s", rp.Code, rp.Body.String())
+	}
+
+	// Lookup is case-insensitive on the handle.
+	get := httptest.NewRequest(http.MethodGet, "/guests/get?handle=anna", nil)
+	rg := httptest.NewRecorder()
+	srv.ServeHTTP(rg, get)
+	if rg.Code != http.StatusOK {
+		t.Fatalf("get guest %d", rg.Code)
+	}
+	if !strings.Contains(rg.Body.String(), "nuts") {
+		t.Fatalf("expected allergy 'nuts' in profile, got %s", rg.Body.String())
+	}
+}

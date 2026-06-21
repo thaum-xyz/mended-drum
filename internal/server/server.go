@@ -39,6 +39,10 @@ func New(log *slog.Logger, st *store.Store, mc *mealie.Client, cfg Config) http.
 	mux.HandleFunc("PUT /inventory", s.setInventory)
 	mux.HandleFunc("GET /recipes/search", s.searchRecipes)
 	mux.HandleFunc("GET /recipes/{slug}", s.getRecipe)
+	mux.HandleFunc("GET /guests", s.searchGuests)
+	mux.HandleFunc("PUT /guests", s.upsertGuest)
+	mux.HandleFunc("GET /guests/get", s.getGuest)
+	mux.HandleFunc("POST /guests/preferences", s.addGuestPreference)
 	return middleware(log, cfg, mux)
 }
 
@@ -164,6 +168,90 @@ func (s *Server) getRecipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, evaluate(rec, statuses, true))
+}
+
+func (s *Server) searchGuests(w http.ResponseWriter, r *http.Request) {
+	guests, err := s.store.SearchGuests(r.Context(), r.URL.Query().Get("q"))
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, "search guests", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"guests": guests})
+}
+
+type upsertGuestReq struct {
+	Handle string `json:"handle"`
+	Notes  string `json:"notes"`
+}
+
+func (s *Server) upsertGuest(w http.ResponseWriter, r *http.Request) {
+	var req upsertGuestReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.fail(w, http.StatusBadRequest, "decode body", err)
+		return
+	}
+	if strings.TrimSpace(req.Handle) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "handle is required"})
+		return
+	}
+	if err := s.store.UpsertGuest(r.Context(), req.Handle, req.Notes); err != nil {
+		s.fail(w, http.StatusInternalServerError, "upsert guest", err)
+		return
+	}
+	g, err := s.store.GetGuest(r.Context(), req.Handle)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, "get guest", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, g)
+}
+
+func (s *Server) getGuest(w http.ResponseWriter, r *http.Request) {
+	handle := r.URL.Query().Get("handle")
+	if strings.TrimSpace(handle) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "handle is required"})
+		return
+	}
+	g, err := s.store.GetGuest(r.Context(), handle)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, "get guest", err)
+		return
+	}
+	if g == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"found": false, "handle": handle})
+		return
+	}
+	writeJSON(w, http.StatusOK, g)
+}
+
+type addPrefReq struct {
+	Handle string `json:"handle"`
+	Kind   string `json:"kind"`
+	Value  string `json:"value"`
+}
+
+func (s *Server) addGuestPreference(w http.ResponseWriter, r *http.Request) {
+	var req addPrefReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.fail(w, http.StatusBadRequest, "decode body", err)
+		return
+	}
+	if strings.TrimSpace(req.Handle) == "" || !store.ValidPrefKind(req.Kind) || strings.TrimSpace(req.Value) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "handle, value and kind (like|dislike|allergy) are required",
+		})
+		return
+	}
+	if err := s.store.AddPreference(r.Context(), req.Handle, req.Kind, req.Value); err != nil {
+		s.fail(w, http.StatusInternalServerError, "add preference", err)
+		return
+	}
+	g, err := s.store.GetGuest(r.Context(), req.Handle)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, "get guest", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, g)
 }
 
 // evaluate joins a recipe against current stock, computing makeability, missing
