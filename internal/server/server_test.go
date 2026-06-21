@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thaum-xyz/mended-drum/internal/cocktaildb"
 	"github.com/thaum-xyz/mended-drum/internal/mealie"
 	"github.com/thaum-xyz/mended-drum/internal/store"
 )
@@ -20,7 +22,7 @@ func testServer(t *testing.T) http.Handler {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return New(slog.New(slog.NewTextHandler(io.Discard, nil)), st, mealie.New("", ""), Config{})
+	return New(slog.New(slog.NewTextHandler(io.Discard, nil)), st, mealie.New("", ""), cocktaildb.New(), Config{})
 }
 
 func TestHealthz(t *testing.T) {
@@ -68,7 +70,7 @@ func TestAuthAndCORS(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), st, mealie.New("", ""),
-		Config{APIKey: "secret", AllowOrigin: "https://drum.krupa.net.pl"})
+		cocktaildb.New(), Config{APIKey: "secret", AllowOrigin: "https://drum.krupa.net.pl"})
 
 	// CORS preflight: no auth, 204, origin echoed.
 	ro := httptest.NewRecorder()
@@ -110,7 +112,7 @@ func TestCORSEchoesOrigin(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), st, mealie.New("", ""), Config{AllowOrigin: "*"})
+	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), st, mealie.New("", ""), cocktaildb.New(), Config{AllowOrigin: "*"})
 
 	req := httptest.NewRequest(http.MethodOptions, "/inventory", nil)
 	req.Header.Set("Origin", "https://anything.example")
@@ -154,5 +156,35 @@ func TestGuestRoundTrip(t *testing.T) {
 	srv.ServeHTTP(rs, srch)
 	if rs.Code != http.StatusOK || !strings.Contains(rs.Body.String(), "nuts") {
 		t.Fatalf("search should include prefs, got %d: %s", rs.Code, rs.Body.String())
+	}
+}
+
+func TestExternalLookup(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"drinks":[{"strDrink":"Negroni","strIngredient1":"Gin","strMeasure1":"1 oz","strIngredient2":"Campari","strMeasure2":"1 oz"}]}`))
+	}))
+	defer ts.Close()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.Set(context.Background(), "Gin", "in_stock"); err != nil {
+		t.Fatalf("seed inventory: %v", err)
+	}
+
+	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), st, mealie.New("", ""),
+		cocktaildb.NewWithBaseURL(ts.URL), Config{})
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/recipes/external?name=negroni", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	// Gin in stock, Campari untracked -> not makeable, Campari listed missing.
+	if body := rec.Body.String(); !strings.Contains(body, "Negroni") ||
+		!strings.Contains(body, "Campari") || !strings.Contains(body, "untracked") {
+		t.Fatalf("unexpected external body: %s", body)
 	}
 }

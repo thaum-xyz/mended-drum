@@ -58,6 +58,15 @@ const openAPISpec = `{
         "responses": {"200": {"description": "Recipe detail", "content": {"application/json": {"schema": {"type": "object"}}}}}
       }
     },
+    "/recipes/external": {
+      "get": {
+        "operationId": "lookupExternalRecipe",
+        "summary": "Look up a cocktail not in the bar's book",
+        "description": "Search TheCocktailDB for a cocktail that is NOT in the bar's own book. Use this only after searchRecipes returns nothing. Results are external drafts (with ingredients, measures, instructions and makeability from current stock) — present them as suggestions, not as the bar's canonical recipes.",
+        "parameters": [{"name": "name", "in": "query", "required": true, "schema": {"type": "string"}, "description": "Cocktail name to look up, e.g. 'negroni'"}],
+        "responses": {"200": {"description": "External drafts", "content": {"application/json": {"schema": {"type": "object"}}}}}
+      }
+    },
     "/guests": {
       "get": {
         "operationId": "searchGuests",

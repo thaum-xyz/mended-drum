@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/thaum-xyz/mended-drum/internal/cocktaildb"
 	"github.com/thaum-xyz/mended-drum/internal/mealie"
 	"github.com/thaum-xyz/mended-drum/internal/store"
 )
@@ -23,14 +24,15 @@ type Config struct {
 }
 
 type Server struct {
-	log    *slog.Logger
-	store  *store.Store
-	mealie *mealie.Client
+	log        *slog.Logger
+	store      *store.Store
+	mealie     *mealie.Client
+	cocktaildb *cocktaildb.Client
 }
 
 // New returns the HTTP handler for the tool server.
-func New(log *slog.Logger, st *store.Store, mc *mealie.Client, cfg Config) http.Handler {
-	s := &Server{log: log, store: st, mealie: mc}
+func New(log *slog.Logger, st *store.Store, mc *mealie.Client, cdb *cocktaildb.Client, cfg Config) http.Handler {
+	s := &Server{log: log, store: st, mealie: mc, cocktaildb: cdb}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.health)
@@ -38,6 +40,7 @@ func New(log *slog.Logger, st *store.Store, mc *mealie.Client, cfg Config) http.
 	mux.HandleFunc("GET /inventory", s.listInventory)
 	mux.HandleFunc("PUT /inventory", s.setInventory)
 	mux.HandleFunc("GET /recipes/search", s.searchRecipes)
+	mux.HandleFunc("GET /recipes/external", s.externalRecipe)
 	mux.HandleFunc("GET /recipes/{slug}", s.getRecipe)
 	mux.HandleFunc("GET /guests", s.searchGuests)
 	mux.HandleFunc("PUT /guests", s.upsertGuest)
@@ -168,6 +171,77 @@ func (s *Server) getRecipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, evaluate(rec, statuses, true))
+}
+
+type externalResult struct {
+	Name         string               `json:"name"`
+	Source       string               `json:"source"`
+	IBA          string               `json:"iba,omitempty"`
+	Glass        string               `json:"glass,omitempty"`
+	Alcoholic    string               `json:"alcoholic,omitempty"`
+	Instructions string               `json:"instructions,omitempty"`
+	InMealie     bool                 `json:"in_mealie"`
+	Makeable     bool                 `json:"makeable"`
+	Ingredients  []externalIngredient `json:"ingredients"`
+	Missing      []missingItem        `json:"missing"`
+}
+
+type externalIngredient struct {
+	Name      string `json:"name"`
+	Measure   string `json:"measure,omitempty"`
+	Available bool   `json:"available"`
+}
+
+func (s *Server) externalRecipe(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if strings.TrimSpace(name) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
+		return
+	}
+	recipes, err := s.cocktaildb.Search(r.Context(), name)
+	if err != nil {
+		s.fail(w, http.StatusBadGateway, "external lookup", err)
+		return
+	}
+	statuses, err := s.store.Statuses(r.Context())
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, "inventory statuses", err)
+		return
+	}
+	out := []externalResult{}
+	for _, rc := range recipes {
+		res := externalResult{
+			Name:         rc.Name,
+			Source:       "TheCocktailDB",
+			IBA:          rc.IBA,
+			Glass:        rc.Glass,
+			Alcoholic:    rc.Alcoholic,
+			Instructions: rc.Instructions,
+			InMealie:     false,
+			Makeable:     true,
+			Ingredients:  []externalIngredient{},
+			Missing:      []missingItem{},
+		}
+		for _, ing := range rc.Ingredients {
+			st, tracked := statuses[store.Key(ing.Name)]
+			available := tracked && (st == store.InStock || st == store.Low)
+			if !available {
+				res.Makeable = false
+				reason := "untracked"
+				if tracked && st == store.Out {
+					reason = "out"
+				}
+				res.Missing = append(res.Missing, missingItem{Name: ing.Name, Reason: reason})
+			}
+			res.Ingredients = append(res.Ingredients, externalIngredient{
+				Name:      ing.Name,
+				Measure:   ing.Measure,
+				Available: available,
+			})
+		}
+		out = append(out, res)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"external": out})
 }
 
 func (s *Server) searchGuests(w http.ResponseWriter, r *http.Request) {

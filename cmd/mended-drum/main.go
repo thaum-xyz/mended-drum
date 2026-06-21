@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thaum-xyz/mended-drum/internal/cocktaildb"
 	"github.com/thaum-xyz/mended-drum/internal/mealie"
 	"github.com/thaum-xyz/mended-drum/internal/server"
 	"github.com/thaum-xyz/mended-drum/internal/store"
@@ -29,6 +30,7 @@ func main() {
 	defer st.Close()
 
 	mc := mealie.New(os.Getenv("MEALIE_BASE_URL"), os.Getenv("MEALIE_API_TOKEN"))
+	cdb := cocktaildb.New()
 
 	cfg := server.Config{
 		APIKey:      os.Getenv("TOOLS_API_KEY"),
@@ -38,7 +40,7 @@ func main() {
 	addr := ":" + envOr("PORT", "8080")
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(logger, st, mc, cfg),
+		Handler:           server.New(logger, st, mc, cdb, cfg),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
