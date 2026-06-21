@@ -1,8 +1,6 @@
-// Command mended-drum runs the Mended Drum bar-assistant tool server.
-//
-// It exposes the bar's capabilities (inventory, recipes, guests) as an OpenAPI
-// tool server consumed by Open WebUI. For now it serves only health endpoints;
-// the tool surface lands in phase 1.
+// Command mended-drum runs the Mended Drum bar-assistant tool server: a 3-state
+// ingredient inventory plus the Mealie-backed recipe book, exposed as an
+// OpenAPI tool server for Open WebUI.
 package main
 
 import (
@@ -15,16 +13,27 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thaum-xyz/mended-drum/internal/mealie"
 	"github.com/thaum-xyz/mended-drum/internal/server"
+	"github.com/thaum-xyz/mended-drum/internal/store"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
+	st, err := store.Open(envOr("DB_PATH", "/data/mended-drum.db"))
+	if err != nil {
+		logger.Error("open store", "err", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+
+	mc := mealie.New(os.Getenv("MEALIE_BASE_URL"), os.Getenv("MEALIE_API_TOKEN"))
+
 	addr := ":" + envOr("PORT", "8080")
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(logger),
+		Handler:           server.New(logger, st, mc),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
