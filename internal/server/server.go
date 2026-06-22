@@ -557,22 +557,38 @@ func setCORS(w http.ResponseWriter, r *http.Request, cfg Config) {
 	}
 }
 
-// middleware adds CORS, optional bearer-key auth and request logging.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+// middleware adds CORS, optional bearer-key auth and logs every request
+// (method, path, status, origin) — including OPTIONS/401/404 — for diagnostics.
 func middleware(log *slog.Logger, cfg Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w, r, cfg)
+		origin := r.Header.Get("Origin")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
+			log.Info("request", "method", r.Method, "path", r.URL.Path, "status", http.StatusNoContent, "origin", origin)
 			return
 		}
 		if cfg.APIKey != "" && protectedPath(r.URL.Path) {
 			want := "Bearer " + cfg.APIKey
 			if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(want)) != 1 {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				log.Warn("request", "method", r.Method, "path", r.URL.Path, "status", http.StatusUnauthorized,
+					"origin", origin, "had_auth", r.Header.Get("Authorization") != "")
 				return
 			}
 		}
-		next.ServeHTTP(w, r)
-		log.Info("request", "method", r.Method, "path", r.URL.Path)
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		log.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status, "origin", origin)
 	})
 }
