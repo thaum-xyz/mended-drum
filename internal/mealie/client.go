@@ -2,9 +2,11 @@
 package mealie
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -29,8 +31,9 @@ func New(baseURL, token string) *Client {
 }
 
 type Tag struct {
+	ID   string `json:"id,omitempty"`
 	Name string `json:"name"`
-	Slug string `json:"slug"`
+	Slug string `json:"slug,omitempty"`
 }
 
 type Food struct {
@@ -70,8 +73,16 @@ type Summary struct {
 	Tags        []Tag  `json:"tags"`
 }
 
-func (c *Client) get(ctx context.Context, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+func (c *Client) request(ctx context.Context, method, path string, body, out any) error {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, rdr)
 	if err != nil {
 		return err
 	}
@@ -79,15 +90,62 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("mealie GET %s: status %d", path, resp.StatusCode)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("mealie %s %s: status %d", method, path, resp.StatusCode)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+func (c *Client) get(ctx context.Context, path string, out any) error {
+	return c.request(ctx, http.MethodGet, path, nil, out)
+}
+
+// CreateRecipe creates a stub recipe by name and returns its slug.
+func (c *Client) CreateRecipe(ctx context.Context, name string) (string, error) {
+	var slug string
+	if err := c.request(ctx, http.MethodPost, "/api/recipes", map[string]string{"name": name}, &slug); err != nil {
+		return "", err
+	}
+	return slug, nil
+}
+
+// EnsureTag returns an existing tag by name or creates it.
+func (c *Client) EnsureTag(ctx context.Context, name string) (Tag, error) {
+	var created Tag
+	err := c.request(ctx, http.MethodPost, "/api/organizers/tags", map[string]string{"name": name}, &created)
+	if err == nil && created.ID != "" {
+		return created, nil
+	}
+	var resp struct {
+		Items []Tag `json:"items"`
+	}
+	if e := c.get(ctx, "/api/organizers/tags?search="+url.QueryEscape(name), &resp); e == nil {
+		for _, t := range resp.Items {
+			if strings.EqualFold(t.Name, name) {
+				return t, nil
+			}
+		}
+	}
+	if err == nil {
+		err = fmt.Errorf("tag %q not found after create", name)
+	}
+	return Tag{}, err
+}
+
+// PatchRecipe applies a partial update to a recipe.
+func (c *Client) PatchRecipe(ctx context.Context, slug string, payload any) error {
+	return c.request(ctx, http.MethodPatch, "/api/recipes/"+url.PathEscape(slug), payload, nil)
 }
 
 // SearchRecipes returns up to perPage recipe summaries matching query.

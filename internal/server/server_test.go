@@ -188,3 +188,53 @@ func TestExternalLookup(t *testing.T) {
 		t.Fatalf("unexpected external body: %s", body)
 	}
 }
+
+func TestCreateRecipe(t *testing.T) {
+	var patched string
+	mealieStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/recipes":
+			_, _ = w.Write([]byte(`"margarita"`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/organizers/tags":
+			_, _ = w.Write([]byte(`{"id":"t1","name":"mended-drum","slug":"mended-drum"}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/recipes/margarita":
+			b, _ := io.ReadAll(r.Body)
+			patched = string(b)
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer mealieStub.Close()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), st,
+		mealie.New(mealieStub.URL, "tok"), cocktaildb.New(), Config{})
+
+	// Without confirm -> refused (the promocja gate).
+	rn := httptest.NewRecorder()
+	srv.ServeHTTP(rn, httptest.NewRequest(http.MethodPost, "/recipes",
+		strings.NewReader(`{"name":"Margarita","ingredients":[{"name":"Tequila"}]}`)))
+	if rn.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 without confirm, got %d", rn.Code)
+	}
+
+	// With confirm -> created and tagged.
+	ro := httptest.NewRecorder()
+	srv.ServeHTTP(ro, httptest.NewRequest(http.MethodPost, "/recipes", strings.NewReader(
+		`{"confirm":true,"name":"Margarita","source":"TheCocktailDB","ingredients":[{"name":"Tequila","measure":"50 ml"},{"name":"Lime juice","measure":"25 ml"}],"instructions":"Shake."}`)))
+	if ro.Code != http.StatusOK {
+		t.Fatalf("create got %d: %s", ro.Code, ro.Body.String())
+	}
+	if !strings.Contains(ro.Body.String(), "margarita") {
+		t.Fatalf("expected slug in response: %s", ro.Body.String())
+	}
+	if !strings.Contains(patched, "mended-drum") || !strings.Contains(patched, "Tequila") {
+		t.Fatalf("patched payload missing tag/ingredient: %s", patched)
+	}
+}

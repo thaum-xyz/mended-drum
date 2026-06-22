@@ -58,6 +58,29 @@ const openAPISpec = `{
         "responses": {"200": {"description": "Recipe detail", "content": {"application/json": {"schema": {"type": "object"}}}}}
       }
     },
+    "/recipes": {
+      "post": {
+        "operationId": "createRecipe",
+        "summary": "Save a new recipe to the bar's book (Mealie)",
+        "description": "Add a NEW cocktail to the bar's own book (Mealie). Call this ONLY after the bartender explicitly approves saving it (e.g. 'add this to our book') and set confirm=true only then — never write speculatively. The recipe is tagged 'mended-drum' for identification. Provide ingredients (name + measure), the method as instructions, and any known allergens.",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": ["confirm", "name", "ingredients"],
+            "properties": {
+              "confirm": {"type": "boolean", "description": "Must be true; set only on explicit bartender approval"},
+              "name": {"type": "string", "description": "Cocktail name"},
+              "ingredients": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "measure": {"type": "string"}}}, "description": "Ingredients with optional measures"},
+              "instructions": {"type": "string", "description": "Preparation method"},
+              "allergens": {"type": "array", "items": {"type": "string"}, "description": "Known allergens, e.g. ['nuts','egg']"},
+              "source": {"type": "string", "description": "Where it came from, e.g. 'TheCocktailDB'"}
+            }
+          }}}
+        },
+        "responses": {"200": {"description": "Saved", "content": {"application/json": {"schema": {"type": "object"}}}}}
+      }
+    },
     "/recipes/external": {
       "get": {
         "operationId": "lookupExternalRecipe",

@@ -42,6 +42,7 @@ func New(log *slog.Logger, st *store.Store, mc *mealie.Client, cdb *cocktaildb.C
 	mux.HandleFunc("GET /recipes/search", s.searchRecipes)
 	mux.HandleFunc("GET /recipes/external", s.externalRecipe)
 	mux.HandleFunc("GET /recipes/{slug}", s.getRecipe)
+	mux.HandleFunc("POST /recipes", s.createRecipe)
 	mux.HandleFunc("GET /guests", s.searchGuests)
 	mux.HandleFunc("PUT /guests", s.upsertGuest)
 	mux.HandleFunc("GET /guests/get", s.getGuest)
@@ -242,6 +243,107 @@ func (s *Server) externalRecipe(w http.ResponseWriter, r *http.Request) {
 		out = append(out, res)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"external": out})
+}
+
+type createRecipeIngredient struct {
+	Name    string `json:"name"`
+	Measure string `json:"measure"`
+}
+
+type createRecipeReq struct {
+	Confirm      bool                     `json:"confirm"`
+	Name         string                   `json:"name"`
+	Ingredients  []createRecipeIngredient `json:"ingredients"`
+	Instructions string                   `json:"instructions"`
+	Allergens    []string                 `json:"allergens"`
+	Source       string                   `json:"source"`
+}
+
+// identityTag marks every recipe added by the assistant, for identification.
+const identityTag = "mended-drum"
+
+func (s *Server) createRecipe(w http.ResponseWriter, r *http.Request) {
+	var req createRecipeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.fail(w, http.StatusBadRequest, "decode body", err)
+		return
+	}
+	if !req.Confirm {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "refusing to write: set confirm=true only after the bartender explicitly approves saving this recipe",
+		})
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" || len(req.Ingredients) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and at least one ingredient are required"})
+		return
+	}
+
+	slug, err := s.mealie.CreateRecipe(r.Context(), strings.TrimSpace(req.Name))
+	if err != nil {
+		s.fail(w, http.StatusBadGateway, "mealie create recipe", err)
+		return
+	}
+
+	tagNames := []string{identityTag}
+	for _, a := range req.Allergens {
+		if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
+			tagNames = append(tagNames, "alergen:"+a)
+		}
+	}
+	tags := []mealie.Tag{}
+	for _, tn := range tagNames {
+		t, err := s.mealie.EnsureTag(r.Context(), tn)
+		if err != nil {
+			s.log.Warn("ensure tag", "tag", tn, "err", err)
+			continue
+		}
+		tags = append(tags, t)
+	}
+
+	// Ingredient notes = names (so the makeable join works); measures go into the
+	// instructions, matching the bar's existing recipe convention.
+	type ingredientPayload struct {
+		Note    string `json:"note"`
+		Display string `json:"display"`
+	}
+	ings := make([]ingredientPayload, 0, len(req.Ingredients))
+	var measured strings.Builder
+	measured.WriteString("Składniki:\n")
+	for _, ing := range req.Ingredients {
+		name := strings.TrimSpace(ing.Name)
+		if name == "" {
+			continue
+		}
+		ings = append(ings, ingredientPayload{Note: name, Display: name})
+		line := name
+		if m := strings.TrimSpace(ing.Measure); m != "" {
+			line = m + " " + name
+		}
+		measured.WriteString("- " + line + "\n")
+	}
+
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = "asystent"
+	}
+	text := measured.String()
+	if instr := strings.TrimSpace(req.Instructions); instr != "" {
+		text += "\n" + instr
+	}
+	text += "\n\n(Dodane przez Mended Drum — źródło: " + source + ")"
+
+	payload := map[string]any{
+		"recipeIngredient":   ings,
+		"recipeInstructions": []map[string]string{{"text": text}},
+		"tags":               tags,
+	}
+	if err := s.mealie.PatchRecipe(r.Context(), slug, payload); err != nil {
+		s.fail(w, http.StatusBadGateway, "mealie update recipe", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"slug": slug, "tags": tagNames, "saved": true})
 }
 
 func (s *Server) searchGuests(w http.ResponseWriter, r *http.Request) {
