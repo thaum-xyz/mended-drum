@@ -31,9 +31,10 @@ func New(baseURL, token string) *Client {
 }
 
 type Tag struct {
-	ID   string `json:"id,omitempty"`
-	Name string `json:"name"`
-	Slug string `json:"slug,omitempty"`
+	ID      string `json:"id,omitempty"`
+	GroupID string `json:"groupId,omitempty"`
+	Name    string `json:"name"`
+	Slug    string `json:"slug,omitempty"`
 }
 
 type Food struct {
@@ -99,7 +100,8 @@ func (c *Client) request(ctx context.Context, method, path string, body, out any
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("mealie %s %s: status %d", method, path, resp.StatusCode)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 600))
+		return fmt.Errorf("mealie %s %s: status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)

@@ -304,8 +304,11 @@ func (s *Server) createRecipe(w http.ResponseWriter, r *http.Request) {
 	// Ingredient notes = names (so the makeable join works); measures go into the
 	// instructions, matching the bar's existing recipe convention.
 	type ingredientPayload struct {
-		Note    string `json:"note"`
-		Display string `json:"display"`
+		Quantity float64 `json:"quantity"`
+		Unit     any     `json:"unit"`
+		Food     any     `json:"food"`
+		Note     string  `json:"note"`
+		Display  string  `json:"display"`
 	}
 	ings := make([]ingredientPayload, 0, len(req.Ingredients))
 	var measured strings.Builder
@@ -340,7 +343,7 @@ func (s *Server) createRecipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	raw["recipeIngredient"] = ings
-	raw["recipeInstructions"] = []map[string]string{{"text": text}}
+	raw["recipeInstructions"] = []map[string]any{{"title": "", "summary": "", "text": text, "ingredientReferences": []any{}}}
 	raw["tags"] = tags
 	if err := s.mealie.PutRecipe(r.Context(), slug, raw); err != nil {
 		s.fail(w, http.StatusBadGateway, "mealie update recipe", err)
