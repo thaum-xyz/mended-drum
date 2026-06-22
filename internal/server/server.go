@@ -518,13 +518,14 @@ func (s *Server) fail(w http.ResponseWriter, code int, msg string, err error) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
-// publicPath reports whether a path is reachable without the API key.
-func publicPath(p string) bool {
-	switch p {
-	case "/healthz", "/readyz", "/openapi.json":
-		return true
-	}
-	return false
+// protectedPath reports whether a path requires the API key. Only the tool
+// endpoints are gated; everything else (health, openapi, and unknown probes
+// such as Open WebUI's /api/config) falls through to the router — returning a
+// clean 404 for unknown paths rather than a hostile 401 that breaks clients.
+func protectedPath(p string) bool {
+	return strings.HasPrefix(p, "/inventory") ||
+		strings.HasPrefix(p, "/recipes") ||
+		strings.HasPrefix(p, "/guests")
 }
 
 // setCORS reflects the caller's Origin so the tool server works regardless of
@@ -564,7 +565,7 @@ func middleware(log *slog.Logger, cfg Config, next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if cfg.APIKey != "" && !publicPath(r.URL.Path) {
+		if cfg.APIKey != "" && protectedPath(r.URL.Path) {
 			want := "Bearer " + cfg.APIKey
 			if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(want)) != 1 {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})

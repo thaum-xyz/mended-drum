@@ -96,6 +96,13 @@ func TestAuthAndCORS(t *testing.T) {
 		t.Fatalf("healthz got %d, want 200", rech.Code)
 	}
 
+	// Unknown probes (e.g. Open WebUI's /api/config) get 404, not a hostile 401.
+	runk := httptest.NewRecorder()
+	srv.ServeHTTP(runk, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if runk.Code != http.StatusNotFound {
+		t.Fatalf("unknown path got %d, want 404", runk.Code)
+	}
+
 	// Correct key -> 200.
 	r2 := httptest.NewRequest(http.MethodGet, "/inventory", nil)
 	r2.Header.Set("Authorization", "Bearer secret")
