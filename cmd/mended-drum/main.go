@@ -22,7 +22,12 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	st, err := store.Open(envOr("DB_PATH", "/data/mended-drum.db"))
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		logger.Error("DATABASE_URL is required")
+		os.Exit(1)
+	}
+	st, err := store.Open(dbURL)
 	if err != nil {
 		logger.Error("open store", "err", err)
 		os.Exit(1)

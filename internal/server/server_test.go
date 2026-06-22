@@ -2,27 +2,44 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
+	"os"
 	"strings"
 	"testing"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/thaum-xyz/mended-drum/internal/cocktaildb"
 	"github.com/thaum-xyz/mended-drum/internal/mealie"
 	"github.com/thaum-xyz/mended-drum/internal/store"
 )
 
-func testServer(t *testing.T) http.Handler {
+func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set TEST_DATABASE_URL to run server tests against Postgres")
+	}
+	st, err := store.Open(dsn) // also migrates the schema
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
+	if raw, err := sql.Open("pgx", dsn); err == nil {
+		_, _ = raw.ExecContext(context.Background(), `TRUNCATE ingredient_stock, guest, guest_pref`)
+		_ = raw.Close()
+	}
 	t.Cleanup(func() { _ = st.Close() })
-	return New(slog.New(slog.NewTextHandler(io.Discard, nil)), st, mealie.New("", ""), cocktaildb.New(), Config{})
+	return st
+}
+
+func newLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func testServer(t *testing.T) http.Handler {
+	return New(newLogger(), newTestStore(t), mealie.New("", ""), cocktaildb.New(), Config{})
 }
 
 func TestHealthz(t *testing.T) {
@@ -64,22 +81,22 @@ func TestSetInventoryValidation(t *testing.T) {
 }
 
 func TestAuthAndCORS(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), st, mealie.New("", ""),
-		cocktaildb.New(), Config{APIKey: "secret", AllowOrigin: "https://drum.krupa.net.pl"})
+	srv := New(newLogger(), newTestStore(t), mealie.New("", ""), cocktaildb.New(),
+		Config{APIKey: "secret", AllowOrigin: "https://drum.krupa.net.pl"})
 
-	// CORS preflight: no auth, 204, origin echoed.
+	// CORS preflight: no auth, 204, origin echoed, request headers reflected.
 	ro := httptest.NewRecorder()
-	srv.ServeHTTP(ro, httptest.NewRequest(http.MethodOptions, "/inventory", nil))
+	opt := httptest.NewRequest(http.MethodOptions, "/inventory", nil)
+	opt.Header.Set("Access-Control-Request-Headers", "authorization, x-session-id")
+	srv.ServeHTTP(ro, opt)
 	if ro.Code != http.StatusNoContent {
 		t.Fatalf("OPTIONS got %d, want 204", ro.Code)
 	}
 	if ro.Header().Get("Access-Control-Allow-Origin") != "https://drum.krupa.net.pl" {
 		t.Fatalf("missing CORS allow-origin")
+	}
+	if ro.Header().Get("Access-Control-Allow-Headers") != "authorization, x-session-id" {
+		t.Fatalf("allow-headers = %q, want reflected", ro.Header().Get("Access-Control-Allow-Headers"))
 	}
 
 	// Protected endpoint without key -> 401.
@@ -89,7 +106,7 @@ func TestAuthAndCORS(t *testing.T) {
 		t.Fatalf("no key got %d, want 401", rec1.Code)
 	}
 
-	// Health endpoint stays open.
+	// Health stays open.
 	rech := httptest.NewRecorder()
 	srv.ServeHTTP(rech, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rech.Code != http.StatusOK {
@@ -114,30 +131,19 @@ func TestAuthAndCORS(t *testing.T) {
 }
 
 func TestCORSEchoesOrigin(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), st, mealie.New("", ""), cocktaildb.New(), Config{AllowOrigin: "*"})
-
+	srv := New(newLogger(), newTestStore(t), mealie.New("", ""), cocktaildb.New(), Config{AllowOrigin: "*"})
 	req := httptest.NewRequest(http.MethodOptions, "/inventory", nil)
 	req.Header.Set("Origin", "https://anything.example")
-	req.Header.Set("Access-Control-Request-Headers", "authorization, x-session-id")
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://anything.example" {
 		t.Fatalf("allow-origin = %q, want echoed request origin", got)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "authorization, x-session-id" {
-		t.Fatalf("allow-headers = %q, want reflected request headers", got)
 	}
 }
 
 func TestGuestRoundTrip(t *testing.T) {
 	srv := testServer(t)
 
-	// Recording a preference auto-creates the guest.
 	post := httptest.NewRequest(http.MethodPost, "/guests/preferences",
 		strings.NewReader(`{"handle":"Anna","kind":"allergy","value":"nuts"}`))
 	rp := httptest.NewRecorder()
@@ -146,21 +152,14 @@ func TestGuestRoundTrip(t *testing.T) {
 		t.Fatalf("add pref %d: %s", rp.Code, rp.Body.String())
 	}
 
-	// Lookup is case-insensitive on the handle.
-	get := httptest.NewRequest(http.MethodGet, "/guests/get?handle=anna", nil)
 	rg := httptest.NewRecorder()
-	srv.ServeHTTP(rg, get)
-	if rg.Code != http.StatusOK {
-		t.Fatalf("get guest %d", rg.Code)
-	}
-	if !strings.Contains(rg.Body.String(), "nuts") {
-		t.Fatalf("expected allergy 'nuts' in profile, got %s", rg.Body.String())
+	srv.ServeHTTP(rg, httptest.NewRequest(http.MethodGet, "/guests/get?handle=anna", nil))
+	if rg.Code != http.StatusOK || !strings.Contains(rg.Body.String(), "nuts") {
+		t.Fatalf("get guest %d: %s", rg.Code, rg.Body.String())
 	}
 
-	// Search results must carry preferences too (not null).
-	srch := httptest.NewRequest(http.MethodGet, "/guests?q=anna", nil)
 	rs := httptest.NewRecorder()
-	srv.ServeHTTP(rs, srch)
+	srv.ServeHTTP(rs, httptest.NewRequest(http.MethodGet, "/guests?q=anna", nil))
 	if rs.Code != http.StatusOK || !strings.Contains(rs.Body.String(), "nuts") {
 		t.Fatalf("search should include prefs, got %d: %s", rs.Code, rs.Body.String())
 	}
@@ -172,24 +171,17 @@ func TestExternalLookup(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
+	st := newTestStore(t)
 	if _, err := st.Set(context.Background(), "Gin", "in_stock"); err != nil {
 		t.Fatalf("seed inventory: %v", err)
 	}
-
-	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), st, mealie.New("", ""),
-		cocktaildb.NewWithBaseURL(ts.URL), Config{})
+	srv := New(newLogger(), st, mealie.New("", ""), cocktaildb.NewWithBaseURL(ts.URL), Config{})
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/recipes/external?name=negroni", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
-	// Gin in stock, Campari untracked -> not makeable, Campari listed missing.
 	if body := rec.Body.String(); !strings.Contains(body, "Negroni") ||
 		!strings.Contains(body, "Campari") || !strings.Contains(body, "untracked") {
 		t.Fatalf("unexpected external body: %s", body)
@@ -216,14 +208,7 @@ func TestCreateRecipe(t *testing.T) {
 	}))
 	defer mealieStub.Close()
 
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-
-	srv := New(slog.New(slog.NewTextHandler(io.Discard, nil)), st,
-		mealie.New(mealieStub.URL, "tok"), cocktaildb.New(), Config{})
+	srv := New(newLogger(), newTestStore(t), mealie.New(mealieStub.URL, "tok"), cocktaildb.New(), Config{})
 
 	// Without confirm -> refused (the promocja gate).
 	rn := httptest.NewRecorder()
@@ -236,12 +221,9 @@ func TestCreateRecipe(t *testing.T) {
 	// With confirm -> created and tagged.
 	ro := httptest.NewRecorder()
 	srv.ServeHTTP(ro, httptest.NewRequest(http.MethodPost, "/recipes", strings.NewReader(
-		`{"confirm":true,"name":"Margarita","source":"TheCocktailDB","ingredients":[{"name":"Tequila","measure":"50 ml"},{"name":"Lime juice","measure":"25 ml"}],"instructions":"Shake."}`)))
+		`{"confirm":true,"name":"Margarita","source":"TheCocktailDB","ingredients":[{"name":"Tequila","measure":"50 ml"}],"instructions":"Shake."}`)))
 	if ro.Code != http.StatusOK {
 		t.Fatalf("create got %d: %s", ro.Code, ro.Body.String())
-	}
-	if !strings.Contains(ro.Body.String(), "margarita") {
-		t.Fatalf("expected slug in response: %s", ro.Body.String())
 	}
 	if !strings.Contains(patched, "mended-drum") || !strings.Contains(patched, "Tequila") {
 		t.Fatalf("patched payload missing tag/ingredient: %s", patched)

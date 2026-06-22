@@ -1,5 +1,5 @@
-// Package store persists the bar's mutable state (3-state ingredient
-// inventory) in a local SQLite database.
+// Package store persists the bar's mutable state (3-state ingredient inventory
+// and guest profiles/preferences) in PostgreSQL.
 package store
 
 import (
@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type Status string
@@ -58,15 +58,34 @@ CREATE TABLE IF NOT EXISTS guest_pref (
 	PRIMARY KEY (handle_key, kind, value)
 );`
 
-// Open opens (creating if needed) the SQLite database at path and migrates it.
-func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+// Open connects to PostgreSQL (dsn is a postgres:// URL), waits for it to be
+// reachable, and migrates the schema.
+func Open(dsn string) (*Store, error) {
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
-	// modernc.org/sqlite is safest with a single writer connection.
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(time.Hour)
+
+	var pingErr error
+	for i := 0; i < 10; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		pingErr = db.PingContext(ctx)
+		cancel()
+		if pingErr == nil {
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+	if pingErr != nil {
+		return nil, fmt.Errorf("ping postgres: %w", pingErr)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := db.ExecContext(ctx, schema); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return &Store{db: db}, nil
@@ -74,7 +93,7 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-// Key normalises an ingredient name into its inventory key.
+// Key normalises an ingredient or guest name into its storage key.
 func Key(name string) string { return strings.ToLower(strings.TrimSpace(name)) }
 
 // Set creates or updates the stock status for an ingredient.
@@ -83,11 +102,11 @@ func (s *Store) Set(ctx context.Context, name, status string) (Stock, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO ingredient_stock (food_key, display_name, status, updated_at)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(food_key) DO UPDATE SET
-		   display_name = excluded.display_name,
-		   status       = excluded.status,
-		   updated_at   = excluded.updated_at`,
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (food_key) DO UPDATE SET
+		   display_name = EXCLUDED.display_name,
+		   status       = EXCLUDED.status,
+		   updated_at   = EXCLUDED.updated_at`,
 		Key(name), display, status, now)
 	if err != nil {
 		return Stock{}, err
@@ -161,8 +180,8 @@ type Guest struct {
 func (s *Store) UpsertGuest(ctx context.Context, handle, notes string) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO guest (handle_key, handle, notes, created_at)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(handle_key) DO UPDATE SET handle=excluded.handle, notes=excluded.notes`,
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (handle_key) DO UPDATE SET handle = EXCLUDED.handle, notes = EXCLUDED.notes`,
 		Key(handle), strings.TrimSpace(handle), strings.TrimSpace(notes),
 		time.Now().UTC().Format(time.RFC3339))
 	return err
@@ -170,7 +189,8 @@ func (s *Store) UpsertGuest(ctx context.Context, handle, notes string) error {
 
 func (s *Store) ensureGuest(ctx context.Context, handle string) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO guest (handle_key, handle, notes, created_at) VALUES (?, ?, '', ?)`,
+		`INSERT INTO guest (handle_key, handle, notes, created_at) VALUES ($1, $2, '', $3)
+		 ON CONFLICT (handle_key) DO NOTHING`,
 		Key(handle), strings.TrimSpace(handle), time.Now().UTC().Format(time.RFC3339))
 	return err
 }
@@ -182,7 +202,8 @@ func (s *Store) AddPreference(ctx context.Context, handle, kind, value string) e
 		return err
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO guest_pref (handle_key, kind, value) VALUES (?, ?, ?)`,
+		`INSERT INTO guest_pref (handle_key, kind, value) VALUES ($1, $2, $3)
+		 ON CONFLICT DO NOTHING`,
 		Key(handle), kind, strings.TrimSpace(value))
 	return err
 }
@@ -191,7 +212,7 @@ func (s *Store) AddPreference(ctx context.Context, handle, kind, value string) e
 func (s *Store) GetGuest(ctx context.Context, handle string) (*Guest, error) {
 	g := &Guest{Likes: []string{}, Dislikes: []string{}, Allergies: []string{}}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT handle, notes FROM guest WHERE handle_key = ?`, Key(handle)).Scan(&g.Handle, &g.Notes)
+		`SELECT handle, notes FROM guest WHERE handle_key = $1`, Key(handle)).Scan(&g.Handle, &g.Notes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -208,7 +229,7 @@ func (s *Store) GetGuest(ctx context.Context, handle string) (*Guest, error) {
 // loadPrefs returns a guest's preferences grouped by kind.
 func (s *Store) loadPrefs(ctx context.Context, handleKey string) (likes, dislikes, allergies []string, err error) {
 	likes, dislikes, allergies = []string{}, []string{}, []string{}
-	rows, err := s.db.QueryContext(ctx, `SELECT kind, value FROM guest_pref WHERE handle_key = ?`, handleKey)
+	rows, err := s.db.QueryContext(ctx, `SELECT kind, value FROM guest_pref WHERE handle_key = $1`, handleKey)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -230,7 +251,8 @@ func (s *Store) loadPrefs(ctx context.Context, handleKey string) (likes, dislike
 	return likes, dislikes, allergies, rows.Err()
 }
 
-// SearchGuests returns guests whose handle or notes match q (all if q is empty).
+// SearchGuests returns guests (with preferences) whose handle or notes match q;
+// all guests if q is empty.
 func (s *Store) SearchGuests(ctx context.Context, q string) ([]Guest, error) {
 	q = strings.ToLower(strings.TrimSpace(q))
 	var (
@@ -242,7 +264,7 @@ func (s *Store) SearchGuests(ctx context.Context, q string) ([]Guest, error) {
 	} else {
 		like := "%" + q + "%"
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT handle, notes FROM guest WHERE lower(handle) LIKE ? OR lower(notes) LIKE ? ORDER BY handle`,
+			`SELECT handle, notes FROM guest WHERE lower(handle) LIKE $1 OR lower(notes) LIKE $2 ORDER BY handle`,
 			like, like)
 	}
 	if err != nil {
@@ -261,7 +283,7 @@ func (s *Store) SearchGuests(ctx context.Context, q string) ([]Guest, error) {
 		rows.Close()
 		return nil, err
 	}
-	rows.Close() // release the single connection before per-guest pref queries
+	rows.Close()
 
 	for i := range out {
 		out[i].Likes, out[i].Dislikes, out[i].Allergies, err = s.loadPrefs(ctx, Key(out[i].Handle))
