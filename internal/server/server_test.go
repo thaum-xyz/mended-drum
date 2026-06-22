@@ -197,7 +197,9 @@ func TestCreateRecipe(t *testing.T) {
 			_, _ = w.Write([]byte(`"margarita"`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/organizers/tags":
 			_, _ = w.Write([]byte(`{"id":"t1","name":"mended-drum","slug":"mended-drum"}`))
-		case r.Method == http.MethodPatch && r.URL.Path == "/api/recipes/margarita":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/recipes/margarita":
+			_, _ = w.Write([]byte(`{"id":"r1","slug":"margarita","name":"Margarita","recipeIngredient":[],"recipeInstructions":[],"tags":[]}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/recipes/margarita":
 			b, _ := io.ReadAll(r.Body)
 			patched = string(b)
 			w.WriteHeader(http.StatusOK)

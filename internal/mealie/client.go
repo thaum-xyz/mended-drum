@@ -143,9 +143,19 @@ func (c *Client) EnsureTag(ctx context.Context, name string) (Tag, error) {
 	return Tag{}, err
 }
 
-// PatchRecipe applies a partial update to a recipe.
-func (c *Client) PatchRecipe(ctx context.Context, slug string, payload any) error {
-	return c.request(ctx, http.MethodPatch, "/api/recipes/"+url.PathEscape(slug), payload, nil)
+// GetRecipeRaw returns the full recipe object as a generic map, for updating.
+func (c *Client) GetRecipeRaw(ctx context.Context, slug string) (map[string]any, error) {
+	var raw map[string]any
+	if err := c.get(ctx, "/api/recipes/"+url.PathEscape(slug), &raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+// PutRecipe replaces a recipe with the full object (Mealie updates via PUT, not
+// a partial PATCH).
+func (c *Client) PutRecipe(ctx context.Context, slug string, obj any) error {
+	return c.request(ctx, http.MethodPut, "/api/recipes/"+url.PathEscape(slug), obj, nil)
 }
 
 // SearchRecipes returns up to perPage recipe summaries matching query.

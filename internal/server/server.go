@@ -333,12 +333,16 @@ func (s *Server) createRecipe(w http.ResponseWriter, r *http.Request) {
 	}
 	text += "\n\n(Dodane przez Mended Drum — źródło: " + source + ")"
 
-	payload := map[string]any{
-		"recipeIngredient":   ings,
-		"recipeInstructions": []map[string]string{{"text": text}},
-		"tags":               tags,
+	// Mealie updates via GET-modify-PUT of the full object (a partial PATCH 500s).
+	raw, err := s.mealie.GetRecipeRaw(r.Context(), slug)
+	if err != nil {
+		s.fail(w, http.StatusBadGateway, "mealie get stub recipe", err)
+		return
 	}
-	if err := s.mealie.PatchRecipe(r.Context(), slug, payload); err != nil {
+	raw["recipeIngredient"] = ings
+	raw["recipeInstructions"] = []map[string]string{{"text": text}}
+	raw["tags"] = tags
+	if err := s.mealie.PutRecipe(r.Context(), slug, raw); err != nil {
 		s.fail(w, http.StatusBadGateway, "mealie update recipe", err)
 		return
 	}
