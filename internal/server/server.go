@@ -285,10 +285,10 @@ func (s *Server) createRecipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tagNames := []string{identityTag}
+	tagNames := []string{identityTag, "cocktail"}
 	for _, a := range req.Allergens {
 		if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
-			tagNames = append(tagNames, "alergen:"+a)
+			tagNames = append(tagNames, "allergen:"+a)
 		}
 	}
 	tags := []mealie.Tag{}
@@ -312,7 +312,7 @@ func (s *Server) createRecipe(w http.ResponseWriter, r *http.Request) {
 	}
 	ings := make([]ingredientPayload, 0, len(req.Ingredients))
 	var measured strings.Builder
-	measured.WriteString("Składniki:\n")
+	measured.WriteString("Ingredients:\n")
 	for _, ing := range req.Ingredients {
 		name := strings.TrimSpace(ing.Name)
 		if name == "" {
@@ -328,13 +328,13 @@ func (s *Server) createRecipe(w http.ResponseWriter, r *http.Request) {
 
 	source := strings.TrimSpace(req.Source)
 	if source == "" {
-		source = "asystent"
+		source = "assistant"
 	}
 	text := measured.String()
 	if instr := strings.TrimSpace(req.Instructions); instr != "" {
 		text += "\n" + instr
 	}
-	text += "\n\n(Dodane przez Mended Drum — źródło: " + source + ")"
+	text += "\n\n(Added by Mended Drum — source: " + source + ")"
 
 	// Mealie updates via GET-modify-PUT of the full object (a partial PATCH 500s).
 	raw, err := s.mealie.GetRecipeRaw(r.Context(), slug)
@@ -499,10 +499,13 @@ func ingredientName(ing mealie.Ingredient) string {
 }
 
 func allergenOf(t mealie.Tag) (string, bool) {
-	const prefix = "alergen:"
 	n := strings.ToLower(strings.TrimSpace(t.Name))
-	if strings.HasPrefix(n, prefix) {
-		return strings.TrimSpace(n[len(prefix):]), true
+	// "allergen:" is the current convention; "alergen:" kept for back-compat so
+	// allergen detection (fail-safe) never silently misses pre-existing recipes.
+	for _, prefix := range []string{"allergen:", "alergen:"} {
+		if strings.HasPrefix(n, prefix) {
+			return strings.TrimSpace(n[len(prefix):]), true
+		}
 	}
 	return "", false
 }
