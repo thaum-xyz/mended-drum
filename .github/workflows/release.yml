@@ -68,7 +68,9 @@ jobs:
           # ISO week-numbering year (%G) + ISO week (%V) stay consistent and
           # monotonic across the year boundary (unlike %Y+%V, which can collide).
           YEAR=$(date -u +%G)
-          WEEK=$(date -u +%V)
+          # 10# strips the leading zero from %V (06 -> 6) so the tag stays valid
+          # SemVer for weeks 1-9 (and avoids octal parse errors on 08/09).
+          WEEK=$(( 10#$(date -u +%V) ))
           # Highest PATCH already published for this week, else start at 0.
           # Immutable: every build gets a fresh, never-reused tag.
           PATCH=$(crane ls "$IMAGE" 2>/dev/null \
